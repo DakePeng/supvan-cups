@@ -58,15 +58,15 @@ pub fn chars_for_service(service: Uuid) -> Option<(Uuid, Uuid)> {
 
 /// A response notification answers a command when it echoes the command byte at
 /// offset 7 of the SPP frame (the same offset the request carries it).
-#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "ble", target_os = "linux")), allow(dead_code))]
 fn response_matches(resp: &[u8], cmd: u8) -> bool {
     resp.get(crate::cmd::CMD_OFFSET) == Some(&cmd)
 }
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 pub(crate) use imp::BlePipe;
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 mod imp {
     use super::{chars_for_service, response_matches};
     use crate::cmd::{CMD_OFFSET, CmdFrame};

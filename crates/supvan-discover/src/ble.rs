@@ -22,17 +22,17 @@ pub struct BleCandidate {
 
 /// True if a scanned device looks like a Supvan BLE printer: Supvan's OUI plus
 /// the firmware serial-name shape both scanners share.
-#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "ble", target_os = "linux")), allow(dead_code))]
 fn is_supvan_ble(addr: &str, name: &str) -> bool {
     models::is_supvan_oui(addr) && models::is_supvan_serial_name(name)
 }
 
-#[cfg(not(feature = "ble"))]
+#[cfg(not(all(feature = "ble", target_os = "linux")))]
 pub async fn list_candidates() -> Vec<BleCandidate> {
     Vec::new()
 }
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 pub async fn list_candidates() -> Vec<BleCandidate> {
     match scan().await {
         Ok(found) => found,
@@ -43,7 +43,7 @@ pub async fn list_candidates() -> Vec<BleCandidate> {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 async fn scan() -> bluer::Result<Vec<BleCandidate>> {
     use bluer::{DiscoveryFilter, DiscoveryTransport};
     use futures_util::StreamExt;

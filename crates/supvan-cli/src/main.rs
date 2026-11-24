@@ -194,8 +194,13 @@ impl Command {
 }
 
 async fn connect(target: &str) -> Result<Printer, Box<dyn Error>> {
-    if target.starts_with("/dev/hidraw") {
+    if target.starts_with("/dev/hidraw")
+        || target.starts_with("DevSrvsID:")
+        || target.starts_with("hid:")
+    {
         eprintln!("Opening USB HID {target}...");
+    } else if supvan_proto::serial::is_serial_path(target) {
+        eprintln!("Opening {target} (Bluetooth SPP serial port)...");
     } else if target.starts_with("ble:") {
         eprintln!("Connecting to {target} (BLE GATT)...");
     } else {
@@ -255,16 +260,30 @@ async fn run(command: Command) -> CliResult {
     }
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    match run(Cli::parse().command).await {
+async fn async_main(command: Command) -> ExitCode {
+    match run(command).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("Error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let command = Cli::parse().command;
+    // The runtime lives on a worker thread: on macOS the main thread must run
+    // the system run loop for IOBluetooth (a no-op wrapper elsewhere).
+    let code = supvan_proto::run_with_main_loop(move || {
+        let code = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+            .block_on(async_main(command));
+        if code == ExitCode::SUCCESS { 0 } else { 1 }
+    });
+    std::process::exit(code);
 }
 
 #[cfg(test)]

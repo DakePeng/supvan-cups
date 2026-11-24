@@ -329,18 +329,23 @@ pub fn parse_mdl(device_id: &str) -> Option<&str> {
         .find_map(|field| field.strip_prefix("MDL:"))
 }
 
+/// The registry is a process-wide singleton; `load()` panics if called
+/// twice, so every test in this crate funnels through here. Always the
+/// embedded table, never a stale system install.
+#[cfg(test)]
+pub(crate) fn load_embedded_for_tests() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = REGISTRY.set(embedded_registry());
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The registry is a process-wide singleton; `load()` panics if called
-    /// twice, so every test funnels through here.
     fn init() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        // Always the embedded table, never a stale system install.
-        ONCE.call_once(|| {
-            let _ = REGISTRY.set(embedded_registry());
-        });
+        load_embedded_for_tests();
     }
 
     #[test]

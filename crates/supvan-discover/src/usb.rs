@@ -1,20 +1,25 @@
-//! USB HID device discovery via sysfs.
+//! USB HID device discovery.
 //!
-//! Scans `/sys/class/hidraw/` for devices matching VID 0x1820 and a known
-//! Supvan USB PID (see [`models::model_by_pid`]).
+//! Linux scans `/sys/class/hidraw/`; everywhere else hidapi enumerates. Either
+//! way a candidate is a device with VID 0x1820 and a known Supvan USB PID (see
+//! [`models::model_by_pid`]).
 
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use supvan_proto::printer::Printer;
 
-use crate::models;
 use crate::is_mock_mode;
+use crate::models;
 
 const SUPVAN_USB_VID: &str = "1820";
 
 /// One USB-attached Supvan candidate ready for cross-correlation with BT.
 pub struct UsbCandidate {
+    /// What to hand `Printer::open_usb`: `/dev/hidrawN` on Linux, the hidapi
+    /// path elsewhere.
     pub hidraw_path: String,
     /// The USB serial, else the bus topology (`bus-1-2.3`) — stable across
     /// hotplug on the same port. A grouping key when `printer_name` is missing.
@@ -61,7 +66,11 @@ async fn probe_printer_name(hidraw_path: &str) -> Option<String> {
 pub async fn list_candidates() -> Vec<UsbCandidate> {
     let mut out = Vec::new();
     for (hidraw_path, model, ids) in supvan_hidraw_devices() {
-        let Some(port_key) = ids.serial.or(ids.bus_path.map(|p| format!("bus-{p}"))) else {
+        let Some(port_key) = ids
+            .serial
+            .or(ids.bus_path.map(|p| format!("bus-{p}")))
+            .or_else(|| (!cfg!(target_os = "linux")).then(|| format!("hid-{hidraw_path}")))
+        else {
             continue;
         };
         let printer_name = probe_printer_name(&hidraw_path).await;
@@ -75,7 +84,43 @@ pub async fn list_candidates() -> Vec<UsbCandidate> {
     out
 }
 
+/// Every Supvan HID interface hidapi sees: `(hidapi path, model, USB identity)`.
+#[cfg(not(target_os = "linux"))]
+fn supvan_hidraw_devices() -> Vec<(String, &'static models::UsbModel, UsbIds)> {
+    let devices = match supvan_proto::enumerate_hid(SUPVAN_USB_VID_NUM) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("usb_discover: HID enumeration failed: {e}");
+            return Vec::new();
+        }
+    };
+    devices
+        .into_iter()
+        .filter_map(|d| {
+            let pid = format!("{:04x}", d.pid);
+            let model = models::model_by_pid(&pid)?;
+            log::debug!(
+                "usb_discover: {} pid={pid} serial={:?} product={:?}",
+                d.path,
+                d.serial,
+                d.product
+            );
+            let ids = UsbIds {
+                vid: SUPVAN_USB_VID.to_string(),
+                pid,
+                serial: d.serial,
+                bus_path: None,
+            };
+            Some((d.path, model, ids))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+const SUPVAN_USB_VID_NUM: u16 = 0x1820;
+
 /// Every Supvan hidraw node: `(/dev path, model, USB identity)`.
+#[cfg(target_os = "linux")]
 fn supvan_hidraw_devices() -> Vec<(String, &'static models::UsbModel, UsbIds)> {
     let hidraw_dir = Path::new("/sys/class/hidraw");
     let Ok(entries) = fs::read_dir(hidraw_dir) else {
@@ -98,7 +143,8 @@ fn supvan_hidraw_devices() -> Vec<(String, &'static models::UsbModel, UsbIds)> {
         .collect()
 }
 
-/// USB device identity read from sysfs.
+/// USB device identity (sysfs on Linux, hidapi elsewhere).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct UsbIds {
     vid: String,
     pid: String,
@@ -107,6 +153,7 @@ struct UsbIds {
     bus_path: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 /// Read a sysfs attribute file, trimmed, returning `None` if absent or empty.
 fn read_trimmed(path: &Path) -> Option<String> {
     fs::read_to_string(path)
@@ -115,9 +162,11 @@ fn read_trimmed(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+#[cfg(target_os = "linux")]
 /// Max levels to walk up from the hidraw node looking for the USB device dir.
 const MAX_SYSFS_WALK_DEPTH: usize = 6;
 
+#[cfg(target_os = "linux")]
 /// Walk up the sysfs device tree to find idVendor, idProduct, serial, and bus path.
 fn read_usb_ids(device_path: &Path) -> Option<UsbIds> {
     // Resolve the "device" symlink to get the real path
@@ -145,6 +194,7 @@ fn read_usb_ids(device_path: &Path) -> Option<UsbIds> {
     None
 }
 
+#[cfg(target_os = "linux")]
 /// Read the USB bus topology path from sysfs (busnum + devpath).
 ///
 /// Returns e.g. "1-2.3" which is stable across reboots as long as the

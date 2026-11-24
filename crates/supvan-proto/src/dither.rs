@@ -55,10 +55,23 @@ pub enum DitherMode {
     /// applies no thermal compensation, and adding ours would stop this being
     /// their pipeline.
     Vendor16,
+    /// No halftone at all: a pixel is ink if it is darker than mid-grey. For
+    /// line art — text, barcodes, QR codes — where a halftone only hurts: it
+    /// turns an anti-aliased edge into a ragged one and punches white dots
+    /// into anything drawn in less than pure black, and a scanner has to read
+    /// through both. Photographs come out as flat silhouettes; that is the
+    /// trade.
+    Threshold,
 }
 
 impl DitherMode {
-    pub const NAMES: [&'static str; 4] = ["bayer", "floyd-steinberg", "atkinson", "vendor16"];
+    pub const NAMES: [&'static str; 5] = [
+        "bayer",
+        "floyd-steinberg",
+        "atkinson",
+        "vendor16",
+        "threshold",
+    ];
 }
 
 impl std::str::FromStr for DitherMode {
@@ -70,6 +83,7 @@ impl std::str::FromStr for DitherMode {
             "floyd-steinberg" | "fs" => Ok(Self::FloydSteinberg),
             "atkinson" => Ok(Self::Atkinson),
             "vendor16" => Ok(Self::Vendor16),
+            "threshold" => Ok(Self::Threshold),
             other => Err(format!(
                 "unknown dither `{other}` ({})",
                 Self::NAMES.join("|")
@@ -113,6 +127,10 @@ const VENDOR_LEVELS: u32 = 16;
 const VENDOR_INK_THRESHOLD: f32 = 125.0;
 /// The grey distance between two adjacent vendor levels.
 const VENDOR_STEP: f32 = 255.0 / (VENDOR_LEVELS - 1) as f32;
+
+/// [`DitherMode::Threshold`]'s cut, on the sRGB value as sent: anything darker
+/// than mid-grey is ink. No thermal compensation — there is no tone to keep.
+const THRESHOLD_INK: u8 = 128;
 
 /// Rows of carried error the widest kernel needs (Atkinson reaches `y + 2`).
 const ERROR_ROWS: usize = 3;
@@ -159,6 +177,14 @@ impl Ditherer {
             DitherMode::FloydSteinberg => (FLOYD_STEINBERG, false),
             DitherMode::Atkinson => (ATKINSON, false),
             DitherMode::Vendor16 => (VENDOR, true),
+            DitherMode::Threshold => {
+                for (x, &grey) in line.iter().enumerate().take(width) {
+                    if grey < THRESHOLD_INK {
+                        ink(mono, x);
+                    }
+                }
+                return;
+            }
             DitherMode::Bayer => {
                 let bayer_row = &BAYER4[(y & 3) as usize];
                 for x in 0..width {
@@ -322,6 +348,25 @@ mod tests {
 
     /// Bayer is stateless, so the same input and y must always give the same
     /// output regardless of what came before.
+    /// Threshold leaves no halftone: dark grey is solid, light grey is clean.
+    #[test]
+    fn threshold_is_solid_or_blank() {
+        let mut d = Ditherer::new(DitherMode::Threshold, 16);
+        for (grey, expect) in [
+            (0u8, 0xFFu8),
+            (60, 0xFF),
+            (127, 0xFF),
+            (128, 0x00),
+            (255, 0x00),
+        ] {
+            for y in 0..4 {
+                let mut mono = [0u8; 2];
+                d.line(&[grey; 16], y, &mut mono);
+                assert_eq!(mono, [expect; 2], "grey {grey} row {y}");
+            }
+        }
+    }
+
     #[test]
     fn bayer_is_stateless() {
         let mut d = Ditherer::new(DitherMode::Bayer, 32);

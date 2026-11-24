@@ -43,6 +43,33 @@ pub fn full_bleed_buffers(canvas: &Canvas, density: Density) -> Vec<PrintBuffer>
     )
 }
 
+/// A full-label 8bpp grayscale image (row-major, 0 = black) as line art at
+/// one density: anything darker than mid-grey is ink, no halftone. For a
+/// front end's own pages — a calibration label, say — that should not go
+/// through a print queue's rasteriser and settings.
+pub fn threshold_image(
+    gray: &[u8],
+    width: u32,
+    height: u32,
+    head_dots: u32,
+    density: Density,
+) -> Result<Vec<PrintBuffer>> {
+    if width == 0 || height == 0 || gray.len() < (width * height) as usize {
+        return Err(Error::InvalidParam(format!(
+            "image data does not fill {width}x{height}"
+        )));
+    }
+    let bpl = width.div_ceil(8) as usize;
+    let mut mono = vec![0u8; bpl * height as usize];
+    let mut ditherer = Ditherer::new(DitherMode::Threshold, width);
+    for (y, row) in mono.chunks_mut(bpl).enumerate() {
+        let start = y * width as usize;
+        ditherer.line(&gray[start..start + width as usize], y as u32, row);
+    }
+    let canvas = printhead_canvas(&mono, width, height, head_dots);
+    Ok(full_bleed_buffers(&canvas, density))
+}
+
 /// An 8bpp grayscale image (row-major, 0 = black), halftoned with `dither`.
 /// The printer has no grayscale mode, so tone is entirely the kernel's doing.
 pub fn grayscale(

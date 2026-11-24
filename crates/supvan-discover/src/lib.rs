@@ -1,14 +1,25 @@
 //! Device discovery and the model registry, shared by the printer application
 //! and the CLI.
 //!
-//! The three transports each have their own scanner — [`usb`] over sysfs,
-//! [`bt`] over BlueZ D-Bus, [`ble`] over an LE scan — and all three agree on
+//! The three transports each have their own scanner — [`usb`] over sysfs
+//! (Linux) or hidapi, [`bt`] over BlueZ D-Bus (Linux), IOBluetooth's paired
+//! list (macOS) or the serial ports the OS made for paired printers, [`ble`]
+//! over an LE scan — and all three agree on
 //! what counts as a Supvan printer by going through [`models`]. Keeping them
 //! in one crate is what stops the CLI and the daemon disagreeing about which
 //! devices exist.
 
 pub mod ble;
+#[cfg(target_os = "linux")]
+#[path = "bt_bluez.rs"]
 pub mod bt;
+#[cfg(target_os = "macos")]
+#[path = "bt_macos.rs"]
+pub mod bt;
+#[cfg(not(target_os = "linux"))]
+mod bt_serial;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub use bt_serial as bt;
 pub mod models;
 pub mod usb;
 

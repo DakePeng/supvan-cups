@@ -75,7 +75,7 @@ pub async fn run_cups_raster_job(spec: &JobSpec<'_>, raster: &[u8]) -> Result<()
                 .map(|p| p.header().v1.cups_compression)
                 .unwrap_or(0),
             spec.print_quality,
-            *DARKNESS_OVERRIDE,
+            darkness_override(),
         ),
     );
     let handle = PrinterHandle { record: &record };
@@ -149,11 +149,26 @@ const QUALITY_DRAFT: u8 = 3;
 const QUALITY_HIGH: u8 = 5;
 
 /// `SUPVAN_DARKNESS`, overriding the configured baseline.
-static DARKNESS_OVERRIDE: LazyLock<Option<i32>> = LazyLock::new(|| {
-    crate::env::parsed("SUPVAN_DARKNESS", "0-100", |s| {
+static DARKNESS_OVERRIDE: LazyLock<std::sync::Mutex<Option<i32>>> = LazyLock::new(|| {
+    std::sync::Mutex::new(crate::env::parsed("SUPVAN_DARKNESS", "0-100", |s| {
         s.parse().ok().filter(|v| DARKNESS_RANGE.contains(v))
-    })
+    }))
 });
+
+fn darkness_override() -> Option<i32> {
+    *DARKNESS_OVERRIDE.lock().unwrap()
+}
+
+/// Change the baseline darkness (0–100) at run time, as `SUPVAN_DARKNESS`
+/// would have set it. `false` if the value is out of range.
+pub fn set_darkness(darkness: i32) -> bool {
+    if !DARKNESS_RANGE.contains(&darkness) {
+        return false;
+    }
+    log::info!("baseline darkness set to {darkness}");
+    *DARKNESS_OVERRIDE.lock().unwrap() = Some(darkness);
+    true
+}
 
 /// Print darkness for a job, 0–100.
 ///
@@ -225,7 +240,7 @@ pub async fn run_jpeg_job(
     let dev = open_job_device(&config.device_uri).await?;
     let record = job_record(
         config,
-        effective_darkness(config.darkness, 0, spec.print_quality, *DARKNESS_OVERRIDE),
+        effective_darkness(config.darkness, 0, spec.print_quality, darkness_override()),
     );
     let handle = PrinterHandle { record: &record };
 

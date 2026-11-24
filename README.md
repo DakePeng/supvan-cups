@@ -9,6 +9,8 @@ IPP-Everywhere client — can print to driverlessly over USB or Bluetooth.
   32/0 (see [docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **Formats**: PWG/CUPS raster and `image/jpeg` (decoded in-process).
 - **USB + Bluetooth**, unified into one logical printer per device.
+- **Linux and macOS** — hidraw/BlueZ on Linux; hidapi and IOBluetooth on
+  macOS (see [docs/MACOS.md](docs/MACOS.md)).
 - **CUPS-managed** — a self-contained IPP Everywhere service: it advertises over
   DNS-SD and CUPS makes an on-demand queue (no queue to install or manage).
 - **Holds jobs when the device is offline** (or jammed) and prints them on
@@ -91,8 +93,10 @@ system-wide (FHS) install instead, `sudo make install`. Full details and the
 acceptance walkthrough is in [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md).
 
 Build prerequisites (Debian/Ubuntu): `sudo apt install pkg-config libdbus-1-dev`,
-plus `bluez` for Bluetooth and `cups` at runtime. Run `make help` for all
-targets (`build`, `test`, `clippy`, `lint`, `run`, …).
+plus `bluez` for Bluetooth and `cups` at runtime. On macOS only a Rust
+toolchain is needed; `make deploy` builds and opens a menu-bar app instead
+([docs/MACOS.md](docs/MACOS.md)). Run `make help` for all targets (`build`,
+`test`, `clippy`, `lint`, `run`, …).
 
 To run it directly without installing:
 
@@ -104,7 +108,8 @@ make run                          # cargo run -p supvan-app (add SUPVAN_MOCK=1 f
 ## CLI tool
 
 `supvan-cli` talks to a printer directly (bypassing CUPS) for diagnostics. Pass
-a Bluetooth address or a `/dev/hidrawN` path:
+a Bluetooth address, a `/dev/hidrawN` path, or on macOS the `DevSrvsID:`
+string that `discover` prints for USB:
 
 ```sh
 supvan-cli discover                          # scan for Supvan Bluetooth devices
@@ -142,6 +147,10 @@ surface without a physical fault, layer on `SUPVAN_MOCK_FAIL=media-empty`
 | `SUPVAN_HOST` | Bind address (default `0.0.0.0`) |
 | `SUPVAN_PORT` | IPP/HTTP port (default `8631`) |
 | `SUPVAN_MODELS` | Override path to `models.toml` (else the embedded copy) |
+| `SUPVAN_ON_DEMAND` | `1`: only jobs dial a wireless printer; status polls use the link only while it is up |
+| `SUPVAN_IDLE_DISCONNECT_SECS` | Hang up a wireless link unused for this long (default: keep it) |
+| `SUPVAN_MDNS` | `0` turns the DNS-SD advert off (loopback-only instances) |
+| `SUPVAN_EVENTS` | `1`: JSON events on stdout, commands on stdin, for a supervising front end |
 | `SUPVAN_MOCK` | `1` runs a synthetic printer (no hardware) |
 | `SUPVAN_DUMP_DIR` | Directory for debug page dumps |
 | `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
@@ -155,6 +164,7 @@ surface without a physical fault, layer on `SUPVAN_MOCK_FAIL=media-empty`
 ## Documentation
 
 - [docs/DEPLOY.md](docs/DEPLOY.md) — install, the systemd units, `cups-browsed` coexistence.
+- [docs/MACOS.md](docs/MACOS.md) — macOS: the menu-bar app, transports, pairing.
 - [docs/CONFORMANCE.md](docs/CONFORMANCE.md) — the IPP Everywhere `ipptool` audit.
 - [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md) — manual CUPS acceptance walkthrough.
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — the reverse-engineered Supvan wire protocol.

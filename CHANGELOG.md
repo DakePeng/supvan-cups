@@ -7,6 +7,33 @@ minor version).
 
 ## [Unreleased]
 
+### Added
+
+- **macOS support**, shipped as a menu-bar app (`make deploy` on Darwin builds
+  and opens `SupvanPrinter.app`; see [docs/MACOS.md](docs/MACOS.md)). USB goes
+  through `hidapi`, Classic Bluetooth through an IOBluetooth RFCOMM channel to
+  a paired printer; BLE, D-Bus and the BlueZ battery provider are now
+  Linux-only. Verified on a T50 Pro over Bluetooth; USB on macOS is untested.
+- **On-demand links.** `SUPVAN_ON_DEMAND=1` keeps status polls from dialing
+  and `SUPVAN_IDLE_DISCONNECT_SECS` hangs up an unused link, for a printer
+  other hosts also use.
+- **A front-end channel.** `SUPVAN_EVENTS=1` puts JSON events on stdout and
+  takes `connect`, `disconnect`, `set_label`, `set_darkness`, `set_dither`,
+  `print_pgm` and `quit` on stdin.
+- **`threshold` dither mode** — no halftone, for text, barcodes and QR codes.
+  A halftone turns the anti-aliased edges of a small code into a checkerboard
+  that scanners cannot read.
+- `SUPVAN_MDNS=0` turns the DNS-SD advert off.
+
+### Changed
+
+- **Status bit MSTA 0x10 (`ribbon_rw_error`) is documented as "label not
+  seated" on a direct-thermal T50 Pro**, where it also lights the red LED; it
+  still holds the job as `media-jam`.
+- **Density is latched once per label** on a T50 Pro: bands at different
+  densities within one label print alike, whole labels at 1, 5 and 9 differ.
+  Recorded in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 ### Fixed
 
 - **Contone rasters printed solid black.** The IPP layer advertises `SRGB24`,

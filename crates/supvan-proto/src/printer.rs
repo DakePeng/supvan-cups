@@ -55,7 +55,8 @@ impl Printer {
         Self { transport }
     }
 
-    /// Open a USB HID printer at the given `/dev/hidrawN` path.
+    /// Open a USB HID printer: a `/dev/hidrawN` path on Linux, elsewhere the
+    /// path hidapi enumerates it under (see [`crate::enumerate_hid`]).
     pub fn open_usb(path: &str) -> Result<Self> {
         let dev = crate::hidraw::HidrawDevice::open(path)?;
         Ok(Self::new(Box::new(
@@ -63,33 +64,67 @@ impl Printer {
         )))
     }
 
-    /// Open a Bluetooth printer at the given RFCOMM address (`AA:BB:CC:DD:EE:FF`).
-    pub fn open_bt(addr: &str) -> Result<Self> {
-        let sock = crate::rfcomm::RfcommSocket::connect(addr)?;
-        Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(sock))))
+    /// Open a Classic-Bluetooth (SPP) printer.
+    ///
+    /// `target` is an RFCOMM address (`AA:BB:CC:DD:EE:FF`), dialled through
+    /// BlueZ on Linux and IOBluetooth on macOS, or a serial device the OS
+    /// created for the paired printer (`/dev/rfcommN`, `/dev/cu.<Name>`).
+    pub fn open_bt(target: &str) -> Result<Self> {
+        if crate::serial::is_serial_path(target) {
+            return Self::open_serial(target);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let sock = crate::rfcomm::RfcommSocket::connect(target)?;
+            Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(sock))))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let link = crate::rfcomm_macos::MacRfcomm::connect(target)?;
+            Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(
+                crate::byte_link::LinkPipe(link),
+            ))))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        Err(Error::InvalidParam(format!(
+            "cannot dial {target}: no RFCOMM API on this platform — pass the serial port \
+             the OS created for the paired printer"
+        )))
+    }
+
+    /// Open an SPP printer over a serial device (`/dev/cu.*`, `/dev/rfcommN`).
+    pub fn open_serial(path: &str) -> Result<Self> {
+        let port = crate::serial::SerialPort::open(path)?;
+        Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(
+            crate::byte_link::LinkPipe(port),
+        ))))
     }
 
     /// Open a BLE GATT printer by address (E11/E12-class hardware). Async
     /// because the `bluer` GATT client is natively async. Requires the `ble`
     /// feature.
-    #[cfg(feature = "ble")]
+    #[cfg(all(feature = "ble", target_os = "linux"))]
     pub async fn open_ble(addr: &str) -> Result<Self> {
         let pipe = crate::ble::BlePipe::connect(addr).await?;
         Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(pipe))))
     }
 
     /// Open a printer from a target string:
-    /// - `/dev/hidrawN` — USB HID
-    /// - `ble://AA:BB:CC:DD:EE:FF` — BLE GATT (needs the `ble` feature)
-    /// - anything else — a Classic Bluetooth RFCOMM address
+    /// - `/dev/hidrawN` (Linux), `DevSrvsID:<n>` (macOS hidapi) or `hid:<path>` — USB HID
+    /// - `/dev/cu.<name>`, `/dev/rfcommN` — Bluetooth SPP over a serial device
+    /// - `ble://AA:BB:CC:DD:EE:FF` — BLE GATT (needs the `ble` feature, Linux)
+    /// - anything else — a Classic Bluetooth RFCOMM address (Linux, macOS)
     pub async fn open_target(target: &str) -> Result<Self> {
-        if target.starts_with("/dev/hidraw") {
+        if let Some(path) = target.strip_prefix("hid:") {
+            return Self::open_usb(path);
+        }
+        if target.starts_with("/dev/hidraw") || target.starts_with("DevSrvsID:") {
             return Self::open_usb(target);
         }
         if let Some(addr) = ble_target(target) {
-            #[cfg(feature = "ble")]
+            #[cfg(all(feature = "ble", target_os = "linux"))]
             return Self::open_ble(addr).await;
-            #[cfg(not(feature = "ble"))]
+            #[cfg(not(all(feature = "ble", target_os = "linux")))]
             return Err(Error::InvalidParam(format!(
                 "cannot open {addr} over BLE: built without the `ble` feature"
             )));

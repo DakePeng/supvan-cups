@@ -36,10 +36,17 @@ pub async fn discover() -> CliResult {
     if rows.is_empty() {
         eprintln!("No Supvan printers found.");
         eprintln!();
-        eprintln!("USB: check the printer is on and the udev rule is installed");
-        eprintln!("     (70-supvan-t50.rules — without it /dev/hidraw* is root-only).");
-        eprintln!("BT:  the printer must be paired, or in pairing range for the scan.");
-        if cfg!(not(feature = "ble")) {
+        if cfg!(target_os = "linux") {
+            eprintln!("USB: check the printer is on and the udev rule is installed");
+            eprintln!("     (70-supvan-t50.rules — without it /dev/hidraw* is root-only).");
+            eprintln!("BT:  the printer must be paired, or in pairing range for the scan.");
+        } else {
+            eprintln!("USB: check the printer is on and the cable carries data.");
+            eprintln!("BT:  pair the printer in System Settings → Bluetooth first; paired");
+            eprintln!("     printers are listed here by address. If macOS asked whether this");
+            eprintln!("     tool may use Bluetooth, allow it and run discover again.");
+        }
+        if cfg!(not(all(feature = "ble", target_os = "linux"))) {
             eprintln!("BLE: not compiled in — rebuild with --features ble.");
         }
         return Ok(());

@@ -318,6 +318,15 @@ brute-forcing is how you brick it.
 Two knobs, in series: the material record's heat times set absolute pulse width,
 and the per-buffer density (0–15) trims it.
 
+**The density is latched once per label, at least on a T50 Pro** (device name
+`T50ProJ`, protocol 2.4, genuine direct-thermal roll, over Bluetooth). The
+field travels in every buffer header, but a label printed as seven bands at
+1, 3, 5, 7, 9, 12 and 15 — text, a one-dot grating and a small QR code in each
+— came out uniform, while three whole labels at 1, 5 and 9 differed plainly.
+So the firmware reads it from the page's first buffer and ignores the rest;
+compare densities across labels, never within one. The vendor app offers 1–9
+with 4 as its default.
+
 Density is **two independent trims**, not one — `Density { black, red }`. The
 Android app keeps them as `mDeepness` / `mRedDeepness` and packs them for
 transport as `(black << 8) | red`, unpacking whenever the value exceeds 255
@@ -438,6 +447,7 @@ We halftone in `dither::Ditherer`, selected by `SUPVAN_DITHER` for the IPP app o
 | `floyd-steinberg` | 7/16, 3/16, 5/16, 1/16 |
 | `atkinson` | spreads 6/8, higher local contrast |
 | `vendor16` | the vendor pipeline reproduced: 16-level quantise + their kernel + threshold 125 |
+| `threshold` | no halftone: ink where the sRGB value is below 128. For text, barcodes and QR codes — a halftone turns the anti-aliased edges of a small code into a checkerboard that scanners cannot read |
 
 `vendor16` deliberately skips `SRGB_TO_LINEAR` — the vendor applies no thermal
 compensation, and adding ours would stop it being their pipeline. Their weights

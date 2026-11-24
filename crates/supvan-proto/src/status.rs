@@ -56,12 +56,22 @@ impl PrinterStatus {
     /// Error flags paired with their human-readable descriptions, in report
     /// order. Single source for [`has_error`](Self::has_error) and
     /// [`error_description`](Self::error_description).
+    ///
+    /// `ribbon_rw_error` carries the Android app's name for MSTA bit 0x10, but
+    /// a direct-thermal T50 Pro raises the same bit when the label is not
+    /// seated (leading edge not past the cutter — the red LED): the firmware
+    /// then accepts a job and drops `printing` without feeding. Observed on a
+    /// T50 Pro over Bluetooth; reseating the label cleared it. So it stays a
+    /// blocking error and the text names both readings.
     fn error_flags(&self) -> [(bool, &'static str); 8] {
         [
             (self.label_rw_error, "label read/write error"),
             (self.label_end, "label roll end"),
             (self.label_mode_error, "label mode mismatch"),
-            (self.ribbon_rw_error, "ribbon read/write error"),
+            (
+                self.ribbon_rw_error,
+                "ribbon read/write error, or label not seated (T50 Pro)",
+            ),
             (self.ribbon_end, "ribbon end"),
             (self.cover_open, "cover open"),
             (self.head_temp_high, "printhead temperature too high"),

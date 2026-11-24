@@ -18,14 +18,21 @@ DBUSDIR  ?= /etc/dbus-1/system.d
 
 # --- User install layout (XDG; no privileges) ------------------------------
 APP_CRATE    := crates/supvan-app
+CLI_CRATE    := crates/supvan-cli
 CARGO_BIN    := $(HOME)/.cargo/bin
 USER_UNITDIR := $(HOME)/.config/systemd/user
+
+# --- macOS: the menu-bar app (no privileges) --------------------------------
+UNAME_S   := $(shell uname -s)
+MAC_APP   := target/SupvanPrinter.app
+MAC_APPS  := $(HOME)/Applications
 
 BINARY      := target/release/supvan-printer-app
 BINARY_CLI  := target/release/supvan-cli
 
 .PHONY: all build debug check test fmt fmt-check clippy lint clean run \
-        install uninstall install-user deploy uninstall-user check-browsed help
+        install uninstall install-user deploy uninstall-user check-browsed help \
+        app install-macos deploy-macos uninstall-macos
 
 all: build ## Build the release binaries (default)
 
@@ -79,6 +86,11 @@ uninstall: ## Remove a system-wide install
 	-rmdir $(DESTDIR)$(DATADIR) 2>/dev/null
 
 # --- User install (no privileges) ------------------------------------------
+ifeq ($(UNAME_S),Darwin)
+install-user: install-macos
+deploy: deploy-macos
+uninstall-user: uninstall-macos
+else
 install-user: ## Install binary + user service into $HOME (no sudo)
 	$(CARGO) install --path $(APP_CRATE) --force
 	install -Dm644 etc/supvan-printer-app.user.service \
@@ -99,6 +111,26 @@ uninstall-user: ## Remove the user install
 	-$(CARGO) uninstall supvan-app 2>/dev/null
 	rm -f $(USER_UNITDIR)/supvan-printer-app.service
 	systemctl --user daemon-reload
+endif
+
+# --- macOS: menu-bar app ----------------------------------------------------
+# `make deploy` resolves to these on Darwin. See docs/MACOS.md.
+app: ## macOS: build target/SupvanPrinter.app (menu-bar app + bundled service)
+	CARGO=$(CARGO) sh macos/build-app.sh
+
+install-macos: app ## macOS: copy the app into ~/Applications
+	-osascript -e 'tell application id "com.supvan.printer-menubar" to quit' 2>/dev/null
+	@sh macos/wait-for-quit.sh
+	mkdir -p $(MAC_APPS)
+	rm -rf $(MAC_APPS)/SupvanPrinter.app
+	cp -R $(MAC_APP) $(MAC_APPS)/
+
+deploy-macos: install-macos ## macOS: install the app, then open it
+	open $(MAC_APPS)/SupvanPrinter.app
+
+uninstall-macos: ## macOS: quit and remove the app (the CUPS queue is left alone)
+	-osascript -e 'tell application id "com.supvan.printer-menubar" to quit' 2>/dev/null
+	rm -rf $(MAC_APPS)/SupvanPrinter.app
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \

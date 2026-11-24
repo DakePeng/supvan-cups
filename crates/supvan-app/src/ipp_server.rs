@@ -185,90 +185,7 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     async fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
-        let Some(dev) = crate::device::open_uri(&config.device_uri).await else {
-            // Device unreachable (powered off / unplugged / BT down). Report
-            // OFFLINE so the framework marks us printer-state=stopped and CUPS
-            // holds queued jobs until it's back — instead of accepting a job
-            // we can't print and dropping it.
-            return Some(PollStatus {
-                reasons: PrinterReason::OFFLINE,
-                ..Default::default()
-            });
-        };
-
-        let mut reasons = dev.status().await;
-        let mut ready_media = None;
-        let mut supply_percent = None;
-
-        // Material query: surfaces labels-remaining + roll-swap detection.
-        // Skipped on mock devices (dev.material() returns None).
-        if let Some(mat) = dev.material().await {
-            let fp = RollFingerprint::from(&mat);
-            let mut cache = ROLLS.lock().unwrap();
-            let key = config.name.clone();
-            match cache.get(&key) {
-                Some(prev) if *prev != fp && !prev.uuid.is_empty() => {
-                    log::info!(
-                        "{}: roll swap detected — was {}x{}mm uuid={} -> now {}x{}mm uuid={}",
-                        key,
-                        prev.width_mm,
-                        prev.height_mm,
-                        prev.uuid,
-                        fp.width_mm,
-                        fp.height_mm,
-                        fp.uuid,
-                    );
-                }
-                None => {
-                    log::info!(
-                        "{}: roll registered — {}x{}mm uuid={} remaining={:?}",
-                        key,
-                        fp.width_mm,
-                        fp.height_mm,
-                        fp.uuid,
-                        mat.remaining,
-                    );
-                }
-                _ => {}
-            }
-            cache.insert(key, fp);
-
-            // Publish the loaded roll as the dynamic media-ready / media-col-ready.
-            // PWG self-describing name uses the om_ (metric) class; size in
-            // hundredths of a millimetre.
-            //
-            // The roll's true width goes out here, unclamped: the stock the
-            // 48mm head cannot reach on a 50mm roll is reported as a hard
-            // margin instead (see `side_margin_hmm` in the IPP layer), so a
-            // client composes into the imageable area rather than having the
-            // driver crop a finished page.
-            let (w, h) = (mat.width_mm as i32, mat.height_mm as i32);
-            if w > 0 && h > 0 {
-                ready_media = Some(ReadyMedia {
-                    name: format!("om_{w}x{h}mm_{w}x{h}mm"),
-                    size_hmm: [w * 100, h * 100],
-                    media_type: "labels".to_string(),
-                });
-            }
-
-            if let Some(remaining) = mat.remaining {
-                if remaining == 0 {
-                    reasons |= PrinterReason::MEDIA_EMPTY;
-                } else if remaining <= MEDIA_LOW_THRESHOLD {
-                    reasons |= PrinterReason::MEDIA_LOW;
-                }
-                // The firmware reports remaining *labels*, not a percentage, and
-                // we don't know the roll's original count. Clamp to 0–100 as a
-                // gauge: full while plenty remain, counting down near empty.
-                supply_percent = Some(remaining.min(100) as u8);
-            }
-        }
-
-        Some(PollStatus {
-            reasons,
-            ready_media,
-            supply_percent,
-        })
+        collect_status(config, !crate::device::on_demand()).await
     }
 
     async fn identify(&self, config: &PrinterConfig, actions: &[String]) {
@@ -293,6 +210,135 @@ impl DeviceBackend for SupvanDeviceBackend {
         }
         None
     }
+}
+
+/// Read the printer's status and loaded roll, publish it as an event, and
+/// return it in the framework's terms.
+///
+/// With `dial` unset a wireless printer is only asked if its link is already
+/// up; otherwise it is left alone and reported as idle with nothing wrong, so
+/// the queue keeps accepting jobs — the job itself dials, and is held if the
+/// printer turns out to be unreachable.
+async fn collect_status(config: &PrinterConfig, dial: bool) -> Option<PollStatus> {
+    let dev = if dial {
+        crate::device::open_uri(&config.device_uri).await
+    } else {
+        crate::device::open_uri_passive(&config.device_uri).await
+    };
+    let Some(dev) = dev else {
+        crate::events::emit(&crate::events::Event::Status {
+            printer: &config.name,
+            connected: false,
+            reasons: Vec::new(),
+            media_mm: None,
+            gap_mm: None,
+            roll_locked: None,
+            remaining: None,
+        });
+        if !dial {
+            return Some(PollStatus::default());
+        }
+        // Device unreachable (powered off / unplugged / BT down). Report
+        // OFFLINE so the framework marks us printer-state=stopped and CUPS
+        // holds queued jobs until it's back — instead of accepting a job
+        // we can't print and dropping it.
+        return Some(PollStatus {
+            reasons: PrinterReason::OFFLINE,
+            ..Default::default()
+        });
+    };
+
+    let mut media_mm = None;
+    let mut gap_mm = None;
+    let mut roll_locked = None;
+    let mut remaining_labels = None;
+    let mut reasons = dev.status().await;
+    let mut ready_media = None;
+    let mut supply_percent = None;
+
+    // Material query: surfaces labels-remaining + roll-swap detection.
+    // Skipped on mock devices (dev.material() returns None).
+    if let Some(mat) = dev.material().await {
+        let fp = RollFingerprint::from(&mat);
+        let mut cache = ROLLS.lock().unwrap();
+        let key = config.name.clone();
+        match cache.get(&key) {
+            Some(prev) if *prev != fp && !prev.uuid.is_empty() => {
+                log::info!(
+                    "{}: roll swap detected — was {}x{}mm uuid={} -> now {}x{}mm uuid={}",
+                    key,
+                    prev.width_mm,
+                    prev.height_mm,
+                    prev.uuid,
+                    fp.width_mm,
+                    fp.height_mm,
+                    fp.uuid,
+                );
+            }
+            None => {
+                log::info!(
+                    "{}: roll registered — {}x{}mm uuid={} remaining={:?}",
+                    key,
+                    fp.width_mm,
+                    fp.height_mm,
+                    fp.uuid,
+                    mat.remaining,
+                );
+            }
+            _ => {}
+        }
+        cache.insert(key, fp);
+
+        // Publish the loaded roll as the dynamic media-ready / media-col-ready.
+        // PWG self-describing name uses the om_ (metric) class; size in
+        // hundredths of a millimetre.
+        //
+        // The roll's true width goes out here, unclamped: the stock the
+        // 48mm head cannot reach on a 50mm roll is reported as a hard
+        // margin instead (see `side_margin_hmm` in the IPP layer), so a
+        // client composes into the imageable area rather than having the
+        // driver crop a finished page.
+        let (w, h) = (mat.width_mm as i32, mat.height_mm as i32);
+        remaining_labels = mat.remaining;
+        gap_mm = Some(mat.gap_mm);
+        roll_locked = Some(!record_is_ours(&mat.uuid, &mat.code));
+        if w > 0 && h > 0 {
+            media_mm = Some([mat.width_mm, mat.height_mm]);
+            ready_media = Some(ReadyMedia {
+                name: format!("om_{w}x{h}mm_{w}x{h}mm"),
+                size_hmm: [w * 100, h * 100],
+                media_type: "labels".to_string(),
+            });
+        }
+
+        if let Some(remaining) = mat.remaining {
+            if remaining == 0 {
+                reasons |= PrinterReason::MEDIA_EMPTY;
+            } else if remaining <= MEDIA_LOW_THRESHOLD {
+                reasons |= PrinterReason::MEDIA_LOW;
+            }
+            // The firmware reports remaining *labels*, not a percentage, and
+            // we don't know the roll's original count. Clamp to 0–100 as a
+            // gauge: full while plenty remain, counting down near empty.
+            supply_percent = Some(remaining.min(100) as u8);
+        }
+    }
+
+    crate::events::emit(&crate::events::Event::Status {
+        printer: &config.name,
+        connected: !dev.is_mock(),
+        reasons: crate::events::reason_names(reasons),
+        media_mm,
+        gap_mm,
+        roll_locked,
+        remaining: remaining_labels,
+    });
+
+    Some(PollStatus {
+        reasons,
+        ready_media,
+        supply_percent,
+    })
 }
 
 pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
@@ -325,6 +371,8 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                 };
                 // image/jpeg is decoded in-process (run_jpeg_job); everything else
                 // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
+                let (printer, job) = (ctx.printer_name.as_str(), ctx.id);
+                crate::events::emit(&crate::events::Event::JobStarted { printer, job });
                 let result = if ctx.document_format == "image/jpeg" {
                     // Fallback when the config carries no media size: 40×30 mm,
                     // expressed in hundredths of a millimetre.
@@ -338,6 +386,23 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                 } else {
                     run_cups_raster_job(&spec, &raster).await
                 };
+                match &result {
+                    Ok(()) => crate::events::emit(&crate::events::Event::JobDone { printer, job }),
+                    Err(f) if f.printer_reasons.is_recoverable() => {
+                        crate::events::emit(&crate::events::Event::JobHeld {
+                            printer,
+                            job,
+                            reasons: crate::events::reason_names(f.printer_reasons),
+                            message: &f.message,
+                        })
+                    }
+                    Err(f) => crate::events::emit(&crate::events::Event::JobFailed {
+                        printer,
+                        job,
+                        reasons: crate::events::reason_names(f.printer_reasons),
+                        message: &f.message,
+                    }),
+                }
                 match result {
                     Ok(()) => JobOutcome::Completed,
                     // A clearable physical condition — printer off / BT down, paper
@@ -373,6 +438,56 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         },
     );
 
+    // Front-end plumbing: announce what we serve, enforce the idle hang-up,
+    // and take connect/disconnect/quit from the supervisor.
+    crate::events::emit(&crate::events::Event::Printers {
+        printers: registry
+            .read()
+            .iter()
+            .map(|p| crate::events::PrinterInfo {
+                name: p.config.name.clone(),
+                info: p.config.display_name.clone(),
+                uri: format!("ipp://localhost:{port}/ipp/print/{}", p.config.name),
+            })
+            .collect(),
+    });
+    crate::device::spawn_idle_reaper();
+    if let Some(mut commands) = crate::events::commands() {
+        let registry_cmd = registry.clone();
+        tokio::spawn(async move {
+            // One look at the printer on startup, so the queue advertises the
+            // roll that is actually loaded. Silent if it isn't reachable.
+            refresh_all(&registry_cmd, false).await;
+            while let Some(cmd) = commands.recv().await {
+                match cmd {
+                    crate::events::Command::Connect => refresh_all(&registry_cmd, true).await,
+                    crate::events::Command::Disconnect => {
+                        crate::device::disconnect_all();
+                    }
+                    crate::events::Command::SetLabel {
+                        width_mm,
+                        length_mm,
+                        gap_mm,
+                    } => set_label_all(&registry_cmd, width_mm, length_mm, gap_mm).await,
+                    crate::events::Command::PrintPgm { density, path } => {
+                        print_pgm_all(&registry_cmd, density, &path).await
+                    }
+                    crate::events::Command::SetDarkness(d) => {
+                        crate::ipp_job::set_darkness(i32::from(d));
+                    }
+                    crate::events::Command::SetDither(mode) => crate::job::set_dither_mode(mode),
+                    crate::events::Command::Quit => {
+                        log::info!("supervisor asked us to quit");
+                        crate::device::disconnect_all();
+                        std::process::exit(0);
+                    }
+                }
+            }
+        });
+    }
+
+    let advertise_mdns = !std::env::var("SUPVAN_MDNS").is_ok_and(|v| v == "0");
+
     Server::run(ServerOptions {
         host: host.to_string(),
         port,
@@ -383,9 +498,135 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         state_path,
         // Advertise the DNS-SD service directly at bind time. No queue UUID to
         // stamp (we own no queue), so there's nothing to coordinate first.
-        advertise_mdns: true,
+        // `SUPVAN_MDNS=0` turns it off for a loopback-only instance whose
+        // advert nobody could reach.
+        advertise_mdns,
     })
     .await
+}
+
+/// Read a binary PGM (`P5`, maxval 255): `(pixels, width, height)`.
+fn read_pgm(path: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    let data = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut pos = 0;
+    let mut field = || -> Option<&[u8]> {
+        while data.get(pos)?.is_ascii_whitespace() {
+            pos += 1;
+        }
+        let start = pos;
+        while pos < data.len() && !data[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        Some(&data[start..pos])
+    };
+    let number = |f: Option<&[u8]>| -> Option<u32> { std::str::from_utf8(f?).ok()?.parse().ok() };
+    let magic = field().map(<[u8]>::to_vec);
+    let (width, height, max) = (number(field()), number(field()), number(field()));
+    let (Some(width), Some(height)) = (width, height) else {
+        return Err(format!("{path}: not a PGM"));
+    };
+    if magic.as_deref() != Some(b"P5") || max != Some(255) || width == 0 || height == 0 {
+        return Err(format!("{path}: need a binary 8-bit PGM"));
+    }
+    let pixels = data
+        .get(pos + 1..pos + 1 + (width * height) as usize)
+        .ok_or_else(|| format!("{path}: truncated"))?;
+    Ok((pixels.to_vec(), width, height))
+}
+
+/// Print a front end's own page on every printer we serve, at one density.
+async fn print_pgm_all(registry: &PrinterRegistry, density: u8, path: &str) {
+    let configs: Vec<PrinterConfig> = registry.read().iter().map(|p| p.config.clone()).collect();
+    for config in configs {
+        let result = print_pgm(
+            &config.device_uri,
+            config.printhead_width_dots,
+            density,
+            path,
+        )
+        .await;
+        if let Err(e) = &result {
+            log::warn!("{}: {path} not printed: {e}", config.name);
+        }
+        crate::events::emit(&crate::events::Event::TestPrint {
+            printer: &config.name,
+            ok: result.is_ok(),
+            message: result.as_ref().err().map_or("", String::as_str),
+        });
+    }
+}
+
+async fn print_pgm(
+    device_uri: &str,
+    head_dots: u32,
+    density: u8,
+    path: &str,
+) -> Result<(), String> {
+    use supvan_proto::buffer::Density;
+
+    let (gray, width, height) = read_pgm(path)?;
+    let page = supvan_proto::page::threshold_image(
+        &gray,
+        width,
+        height,
+        head_dots,
+        Density::uniform(density),
+    )
+    .map_err(|e| e.to_string())?;
+    let dev = crate::device::open_uri(device_uri)
+        .await
+        .ok_or_else(|| format!("cannot reach {device_uri}"))?;
+    let printer = dev
+        .printer()
+        .await
+        .ok_or("mock device: nothing to print on")?;
+    log::info!("print_pgm: {width}x{height} dots at density {density}");
+    printer
+        .print_buffers(&page)
+        .await
+        .map_err(|e| format!("print failed: {e}"))
+}
+
+/// Write a label geometry to every printer we serve, report each outcome,
+/// and publish the status that results.
+async fn set_label_all(registry: &PrinterRegistry, width_mm: u8, length_mm: u8, gap_mm: u8) {
+    let configs: Vec<PrinterConfig> = registry.read().iter().map(|p| p.config.clone()).collect();
+    for config in configs {
+        let result = apply_label(
+            &config.name,
+            &config.device_uri,
+            width_mm,
+            length_mm,
+            Some(gap_mm),
+        )
+        .await;
+        if let Err(e) = &result {
+            log::warn!("{}: label not set: {e}", config.name);
+        }
+        crate::events::emit(&crate::events::Event::LabelSet {
+            printer: &config.name,
+            ok: result.is_ok(),
+            message: result.as_ref().err().map_or("", String::as_str),
+        });
+        collect_status(&config, true).await;
+    }
+}
+
+/// Dial every printer we serve and publish its status. `announce_failure`
+/// adds a `connect_failed` event for the ones that can't be reached.
+async fn refresh_all(registry: &PrinterRegistry, announce_failure: bool) {
+    let configs: Vec<PrinterConfig> = registry.read().iter().map(|p| p.config.clone()).collect();
+    for config in configs {
+        collect_status(&config, true).await;
+        if announce_failure
+            && !config.device_uri.starts_with(crate::device::MOCK_SCHEME)
+            && !crate::device::any_connected()
+        {
+            crate::events::emit(&crate::events::Event::ConnectFailed {
+                printer: &config.name,
+            });
+        }
+    }
 }
 
 /// Heat times to write when provisioning, from `SUPVAN_HEAT` as `heat5:heat40`.
@@ -458,6 +699,35 @@ async fn apply_media(
     device_uri: &str,
     media: &ipp_printer_app::ReadyMedia,
 ) -> Result<(), String> {
+    apply_label(
+        printer_name,
+        device_uri,
+        (media.size_hmm[0] / 100) as u8,
+        (media.size_hmm[1] / 100) as u8,
+        None,
+    )
+    .await
+}
+
+/// [`apply_media`] in millimetres, optionally setting the inter-label gap too
+/// (`None` keeps the gap the roll's record already has).
+async fn apply_label(
+    printer_name: &str,
+    device_uri: &str,
+    width_mm: u8,
+    height_mm: u8,
+    gap_mm: Option<u8>,
+) -> Result<(), String> {
+    use supvan_proto::rfid::{MAX_LABEL_LENGTH_MM, MAX_LABEL_WIDTH_MM};
+    if width_mm == 0
+        || width_mm > MAX_LABEL_WIDTH_MM
+        || height_mm == 0
+        || height_mm > MAX_LABEL_LENGTH_MM
+    {
+        return Err(format!(
+            "{width_mm}x{height_mm}mm is out of range (up to {MAX_LABEL_WIDTH_MM}x{MAX_LABEL_LENGTH_MM}mm)"
+        ));
+    }
     let dev = crate::device::open_uri(device_uri)
         .await
         .ok_or_else(|| format!("cannot reach {device_uri}"))?;
@@ -482,14 +752,9 @@ async fn apply_media(
         ));
     }
 
-    let (width_mm, height_mm) = (
-        (media.size_hmm[0] / 100) as u8,
-        (media.size_hmm[1] / 100) as u8,
-    );
-    if current
-        .as_ref()
-        .is_some_and(|m| m.width_mm == width_mm && m.height_mm == height_mm)
-    {
+    if current.as_ref().is_some_and(|m| {
+        m.width_mm == width_mm && m.height_mm == height_mm && gap_mm.is_none_or(|g| g == m.gap_mm)
+    }) {
         log::info!("{printer_name}: media already {width_mm}x{height_mm}mm, not rewriting");
         return Ok(());
     }
@@ -511,6 +776,12 @@ async fn apply_media(
         if m.label_type > 0 {
             mat.mat_type = m.label_type;
         }
+        if let Some(left) = m.remaining.filter(|&n| n > 0) {
+            mat.remaining = left;
+        }
+    }
+    if let Some(gap) = gap_mm {
+        mat.gap_mm = gap;
     }
 
     let written = printer
@@ -525,9 +796,10 @@ async fn apply_media(
         .unwrap()
         .insert(printer_name.to_string(), RollFingerprint::from(&written));
     log::info!(
-        "{printer_name}: media set to {}x{}mm, heat {}/{}",
+        "{printer_name}: media set to {}x{}mm gap {}mm, heat {}/{}",
         written.width_mm,
         written.height_mm,
+        written.gap_mm,
         heat.0,
         heat.1
     );

@@ -13,10 +13,22 @@ liblzma = "0.4"
 liblzma-sys = "0.4"
 libc = "0.2"
 uuid = "1"
+
 # BLE GATT transport (E11/E12-class printers). Off by default — pulls bluer +
-# BlueZ build deps. Enable with `--features ble`.
+# BlueZ build deps. Enable with `--features ble`. Linux-only: elsewhere the
+# feature is accepted but compiles to nothing.
+[target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 futures-util = { version = "0.3", optional = true }
+
+# USB HID off Linux (macOS IOHIDManager, Windows): hidapi's bundled C backend,
+# no system library needed. Linux keeps the raw hidraw node.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+hidapi = { version = "2.6", default-features = false }
+
+# Compiles the IOBluetooth RFCOMM shim (`macos/rfcomm_shim.m`).
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

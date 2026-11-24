@@ -8,9 +8,13 @@ supvan-proto = { workspace = true }
 log = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-dbus = "0.9"
 tokio = { workspace = true, features = ["time", "rt", "macros"] }
-# BLE GATT discovery (LE scan). Off by default — pulls bluer + BlueZ build deps.
+
+# BlueZ over D-Bus for Classic-Bluetooth discovery, and bluer for the optional
+# BLE scan. Linux-only: elsewhere Bluetooth printers are found through the
+# serial port the OS creates for a paired SPP device (see `bt_serial.rs`).
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"
 bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 futures-util = { version = "0.3", optional = true }
 

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded into the binary's __TEXT,__info_plist section (see build.rs) so
+     macOS can show the Bluetooth privacy prompt; without a usage description
+     TCC kills an unbundled executable on first IOBluetooth use. -->
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.supvan.cli</string>
+<key>CFBundleName</key><string>supvan-cli</string>
+<key>CFBundleVersion</key><string>0.5.1</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>Talks to Supvan label printers over Bluetooth for diagnostics.</string>
+</dict></plist>

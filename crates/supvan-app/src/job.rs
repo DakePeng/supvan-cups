@@ -14,12 +14,26 @@ use crate::printer_device::KsDevice;
 
 /// Halftone kernel for 8bpp input, from `SUPVAN_DITHER` — the app takes all its
 /// other configuration from the environment too.
-static DITHER: LazyLock<DitherMode> = LazyLock::new(|| {
-    crate::env::parsed("SUPVAN_DITHER", &DitherMode::NAMES.join("|"), |s| {
-        s.parse().ok()
-    })
-    .unwrap_or_default()
+static DITHER: LazyLock<std::sync::Mutex<DitherMode>> = LazyLock::new(|| {
+    std::sync::Mutex::new(
+        crate::env::parsed("SUPVAN_DITHER", &DitherMode::NAMES.join("|"), |s| {
+            s.parse().ok()
+        })
+        .unwrap_or_default(),
+    )
 });
+
+/// The halftone kernel jobs use from now on.
+fn dither_mode() -> DitherMode {
+    *DITHER.lock().unwrap()
+}
+
+/// Change the halftone kernel at run time (a front end's setting). Applies to
+/// jobs that start after the call.
+pub fn set_dither_mode(mode: DitherMode) {
+    log::info!("dither mode set to {mode:?}");
+    *DITHER.lock().unwrap() = mode;
+}
 
 /// Poll cadence and budget while waiting for print completion
 /// (COMPLETION_POLLS × COMPLETION_POLL_INTERVAL = 30s).
@@ -50,6 +64,8 @@ pub(crate) fn reasons_from_status(s: &PrinterStatus) -> PrinterReason {
     if s.label_end || s.label_not_installed {
         reasons |= PrinterReason::MEDIA_EMPTY;
     }
+    // `ribbon_rw_error` doubles as "label not seated" on the T50 Pro (see
+    // `PrinterStatus::error_flags`), so it belongs with the media faults.
     if s.label_rw_error || s.label_mode_error || s.ribbon_rw_error {
         reasons |= PrinterReason::MEDIA_JAM;
     }
@@ -118,7 +134,7 @@ impl KsJob {
                  packing to {bpl}"
             );
         }
-        let dither = *DITHER;
+        let dither = dither_mode();
         log::info!(
             "KsJob::start: {w}x{h}, {src_bits_per_pixel}bpp in, bpl={bpl}, \
              density={density}, printhead={printhead_width_dots}, dither={dither:?}"
